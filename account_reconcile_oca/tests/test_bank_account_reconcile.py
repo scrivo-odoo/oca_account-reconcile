@@ -1824,3 +1824,136 @@ class TestReconciliationWidget(TestAccountReconciliationCommon):
                 lambda line: line.account_id.account_type == "asset_receivable"
             ).full_reconcile_id
         )
+
+    def _counterpart_lines(self, bank_stmt_line):
+        return bank_stmt_line.move_id.line_ids.filtered(
+            lambda r: r.account_id == self.current_assets_account
+        )
+
+    def _reconcile_with_manual_rule(self, partner=None):
+        bank_stmt = self.acc_bank_stmt_model.create(
+            {
+                "journal_id": self.bank_journal_euro.id,
+                "date": time.strftime("%Y-07-15"),
+                "name": "test",
+            }
+        )
+        bank_stmt_line = self.acc_bank_stmt_line_model.create(
+            {
+                "name": "testLine",
+                "journal_id": self.bank_journal_euro.id,
+                "statement_id": bank_stmt.id,
+                "amount": 100,
+                "date": time.strftime("%Y-07-15"),
+                "partner_id": partner.id if partner else False,
+            }
+        )
+        with Form(
+            bank_stmt_line,
+            view="account_reconcile_oca.bank_statement_line_form_reconcile_view",
+        ) as f:
+            f.manual_model_id = self.rule
+        bank_stmt_line.reconcile_bank_line()
+        return bank_stmt_line
+
+    @mute_logger("odoo.models.unlink")
+    def test_reconcile_model_line_partner_goes_to_the_counterpart_line(self):
+        rule_partner = self.env["res.partner"].create({"name": "Rule Partner"})
+        self.rule.line_ids.partner_id = rule_partner
+        bank_stmt_line = self._reconcile_with_manual_rule()
+        self.assertEqual(
+            rule_partner, self._counterpart_lines(bank_stmt_line).partner_id
+        )
+
+    @mute_logger("odoo.models.unlink")
+    def test_reconcile_model_line_partner_wins_over_the_partner_of_the_statement_line(
+        self,
+    ):
+        rule_partner = self.env["res.partner"].create({"name": "Rule Partner"})
+        self.rule.line_ids.partner_id = rule_partner
+        bank_stmt_line = self._reconcile_with_manual_rule(self.partner_agrolait)
+        self.assertEqual(
+            rule_partner, self._counterpart_lines(bank_stmt_line).partner_id
+        )
+
+    @mute_logger("odoo.models.unlink")
+    def test_reconcile_model_line_without_partner_keeps_the_statement_line_partner(
+        self,
+    ):
+        bank_stmt_line = self._reconcile_with_manual_rule(self.partner_agrolait)
+        self.assertEqual(
+            self.partner_agrolait, self._counterpart_lines(bank_stmt_line).partner_id
+        )
+
+    @mute_logger("odoo.models.unlink")
+    def test_reconcile_model_line_without_partner_and_a_statement_line_without_one(
+        self,
+    ):
+        bank_stmt_line = self._reconcile_with_manual_rule()
+        counterpart = self._counterpart_lines(bank_stmt_line)
+        self.assertTrue(counterpart)
+        self.assertFalse(counterpart.partner_id)
+
+    @mute_logger("odoo.models.unlink")
+    def test_reconcile_model_line_partner_goes_to_the_tax_line(self):
+        rule_partner = self.env["res.partner"].create({"name": "Rule Partner"})
+        tax = self.env["account.tax"].create(
+            {
+                "name": "Test Tax",
+                "amount": 25,
+                "type_tax_use": "sale",
+                "amount_type": "percent",
+                "company_id": self.env.company.id,
+            }
+        )
+        self.rule.line_ids.amount_string = "80"
+        self.rule.line_ids.tax_ids = tax
+        self.rule.line_ids.partner_id = rule_partner
+        bank_stmt_line = self._reconcile_with_manual_rule()
+        tax_line = bank_stmt_line.move_id.line_ids.filtered(
+            lambda r: r.tax_line_id == tax
+        )
+        self.assertEqual(rule_partner, tax_line.partner_id)
+
+    @mute_logger("odoo.models.unlink")
+    def test_auto_reconcile_rule_partner_goes_to_the_counterpart_line(self):
+        rule_partner = self.env["res.partner"].create({"name": "Rule Partner"})
+        model = self.env["account.reconcile.model"].create(
+            {
+                "name": "write-off model with a partner",
+                "trigger": "auto_reconcile",
+                "match_amount": False,
+                "match_label": "contains",
+                "match_label_param": "DEMO PARTNER",
+                "line_ids": [
+                    Command.create(
+                        {
+                            "account_id": self.current_assets_account.id,
+                            "partner_id": rule_partner.id,
+                        }
+                    )
+                ],
+            }
+        )
+        model.flush_recordset()
+        bank_stmt = self.acc_bank_stmt_model.create(
+            {
+                "journal_id": self.bank_journal_euro.id,
+                "date": time.strftime("%Y-07-15"),
+                "name": "test",
+            }
+        )
+        bank_stmt_line = self.acc_bank_stmt_line_model.create(
+            {
+                "name": "DEMO PARTNER",
+                "payment_ref": "DEMO PARTNER",
+                "journal_id": self.bank_journal_euro.id,
+                "statement_id": bank_stmt.id,
+                "amount": 100,
+                "date": time.strftime("%Y-07-15"),
+            }
+        )
+        self.assertTrue(bank_stmt_line.is_reconciled)
+        self.assertEqual(
+            rule_partner, self._counterpart_lines(bank_stmt_line).partner_id
+        )
