@@ -293,6 +293,7 @@ class AccountReconcileModelLine(models.Model):
             "debit": balance > 0 and balance or 0,
             "credit": balance < 0 and -balance or 0,
             "account_id": self.account_id.id,
+            "partner_id": self.partner_id.id,
             "currency_id": currency.id,
             "analytic_distribution": self.analytic_distribution,
             "reconcile_model_id": self.model_id.id,
